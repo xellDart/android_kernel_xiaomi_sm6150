@@ -29,6 +29,7 @@ typedef int vm_fault_t;
 struct address_space;
 struct mem_cgroup;
 struct hmm;
+struct percpu_rw_semaphore;
 
 /*
  * Each physical page in the system has a struct page associated with
@@ -480,6 +481,16 @@ struct mm_struct {
 	struct file __rcu *exe_file;
 #ifdef CONFIG_MMU_NOTIFIER
 	struct mmu_notifier_mm *mmu_notifier_mm;
+#ifdef CONFIG_SPECULATIVE_PAGE_FAULT
+	/*
+	 * Per-mm lock for speculative COW operations.
+	 * Protects against races between mmu_notifier_register() and
+	 * speculative fault handlers that fire MMU notifications without
+	 * holding mmap_sem. Uses percpu_rw_semaphore for minimal overhead
+	 * on the read (SPF) path - only atomic inc/dec with no cache bouncing.
+	 */
+	struct percpu_rw_semaphore *mmu_notifier_lock;
+#endif
 #endif
 #if defined(CONFIG_TRANSPARENT_HUGEPAGE) && !USE_SPLIT_PMD_PTLOCKS
 	pgtable_t pmd_huge_pte; /* protected by page_table_lock */

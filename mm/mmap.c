@@ -3742,6 +3742,17 @@ int mm_take_all_locks(struct mm_struct *mm)
 
 	mutex_lock(&mm_all_locks_mutex);
 
+	/*
+	 * SPECULATIVE COW: Acquire mmu_notifier_lock for write to prevent
+	 * speculative fault handlers from firing MMU notifications while
+	 * we're registering new notifiers. This ensures the notifier list
+	 * is consistent during SPF COW operations.
+	 */
+#if defined(CONFIG_MMU_NOTIFIER) && defined(CONFIG_SPECULATIVE_PAGE_FAULT)
+	if (mm->mmu_notifier_lock)
+		percpu_down_write(mm->mmu_notifier_lock);
+#endif
+
 	for (vma = mm->mmap; vma; vma = vma->vm_next) {
 		if (signal_pending(current))
 			goto out_unlock;
@@ -3828,6 +3839,15 @@ void mm_drop_all_locks(struct mm_struct *mm)
 		if (vma->vm_file && vma->vm_file->f_mapping)
 			vm_unlock_mapping(vma->vm_file->f_mapping);
 	}
+
+	/*
+	 * SPECULATIVE COW: Release mmu_notifier_lock after releasing all
+	 * other locks. This ensures proper lock ordering.
+	 */
+#if defined(CONFIG_MMU_NOTIFIER) && defined(CONFIG_SPECULATIVE_PAGE_FAULT)
+	if (mm->mmu_notifier_lock)
+		percpu_up_write(mm->mmu_notifier_lock);
+#endif
 
 	mutex_unlock(&mm_all_locks_mutex);
 }

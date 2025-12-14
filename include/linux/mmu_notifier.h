@@ -6,6 +6,7 @@
 #include <linux/spinlock.h>
 #include <linux/mm_types.h>
 #include <linux/srcu.h>
+#include <linux/slab.h>
 
 struct mmu_notifier;
 struct mmu_notifier_ops;
@@ -461,5 +462,108 @@ static inline void mmu_notifier_mm_destroy(struct mm_struct *mm)
 #define set_pte_at_notify set_pte_at
 
 #endif /* CONFIG_MMU_NOTIFIER */
+
+/*
+ * Speculative Page Fault MMU notifier lock helpers.
+ *
+ * These provide synchronization for SPF handlers that need to fire MMU
+ * notifications without holding mmap_sem. The lock protects against races
+ * with mmu_notifier_register() which modifies the notifier list.
+ *
+ * ARM64 OPTIMIZATION: percpu_down_read_trylock() is extremely fast on the
+ * common uncontended path - just an atomic increment on a per-CPU variable.
+ * No cache line bouncing between CPUs. This makes speculative COW nearly
+ * as fast as non-speculative COW on ARM64 with LSE atomics.
+ */
+#if defined(CONFIG_MMU_NOTIFIER) && defined(CONFIG_SPECULATIVE_PAGE_FAULT)
+
+#include <linux/percpu-rwsem.h>
+
+/*
+ * mmu_notifier_trylock - Acquire MMU notifier lock for speculative fault
+ * @mm: memory descriptor
+ *
+ * Returns true if lock acquired, false if contended.
+ * Uses percpu_down_read_trylock for minimal overhead - on ARM64 with LSE
+ * this compiles to a single LDADD instruction on the fast path.
+ */
+static __always_inline bool mmu_notifier_trylock(struct mm_struct *mm)
+{
+	if (likely(mm->mmu_notifier_lock))
+		return percpu_down_read_trylock(mm->mmu_notifier_lock);
+	return true;
+}
+
+/*
+ * mmu_notifier_unlock - Release MMU notifier lock after speculative fault
+ * @mm: memory descriptor
+ *
+ * Uses percpu_up_read which is a simple atomic decrement on ARM64.
+ */
+static __always_inline void mmu_notifier_unlock(struct mm_struct *mm)
+{
+	if (likely(mm->mmu_notifier_lock))
+		percpu_up_read(mm->mmu_notifier_lock);
+}
+
+/*
+ * mmu_notifier_lock_init - Initialize per-mm MMU notifier lock
+ * @mm: memory descriptor
+ *
+ * Called during mm_struct initialization. Returns 0 on success.
+ * The lock is allocated dynamically to avoid bloating mm_struct
+ * when SPF is disabled at runtime.
+ */
+static inline int mmu_notifier_lock_init(struct mm_struct *mm)
+{
+	mm->mmu_notifier_lock = kzalloc(sizeof(struct percpu_rw_semaphore),
+					GFP_KERNEL);
+	if (!mm->mmu_notifier_lock)
+		return -ENOMEM;
+
+	if (percpu_init_rwsem(mm->mmu_notifier_lock)) {
+		kfree(mm->mmu_notifier_lock);
+		mm->mmu_notifier_lock = NULL;
+		return -ENOMEM;
+	}
+	return 0;
+}
+
+/*
+ * mmu_notifier_lock_destroy - Destroy per-mm MMU notifier lock
+ * @mm: memory descriptor
+ *
+ * Called during mm_struct destruction.
+ */
+static inline void mmu_notifier_lock_destroy(struct mm_struct *mm)
+{
+	if (mm->mmu_notifier_lock) {
+		percpu_free_rwsem(mm->mmu_notifier_lock);
+		kfree(mm->mmu_notifier_lock);
+		mm->mmu_notifier_lock = NULL;
+	}
+}
+
+#else /* !CONFIG_MMU_NOTIFIER || !CONFIG_SPECULATIVE_PAGE_FAULT */
+
+static __always_inline bool mmu_notifier_trylock(struct mm_struct *mm)
+{
+	return true;
+}
+
+static __always_inline void mmu_notifier_unlock(struct mm_struct *mm)
+{
+}
+
+static inline int mmu_notifier_lock_init(struct mm_struct *mm)
+{
+	return 0;
+}
+
+static inline void mmu_notifier_lock_destroy(struct mm_struct *mm)
+{
+}
+
+#endif /* CONFIG_MMU_NOTIFIER && CONFIG_SPECULATIVE_PAGE_FAULT */
 
 #endif /* _LINUX_MMU_NOTIFIER_H */
