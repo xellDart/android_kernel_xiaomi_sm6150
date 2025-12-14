@@ -45,8 +45,15 @@ static inline unsigned long __my_cpu_offset(void)
 }
 #define __my_cpu_offset __my_cpu_offset()
 
+/*
+ * Per-CPU atomic operations with prefetch optimization.
+ *
+ * Adding prfm pstl1strm before ldxr brings the cache line into exclusive
+ * state before the LL/SC loop, reducing stxr failures and improving
+ * performance by avoiding the shared->exclusive transition penalty.
+ */
 #define PERCPU_OP(op, asm_op)						\
-static inline unsigned long __percpu_##op(void *ptr,			\
+static __always_inline unsigned long __percpu_##op(void *ptr,		\
 			unsigned long val, int size)			\
 {									\
 	unsigned long loop, ret = 0;					\
@@ -54,40 +61,44 @@ static inline unsigned long __percpu_##op(void *ptr,			\
 	switch (size) {							\
 	case 1:								\
 		asm ("//__per_cpu_" #op "_1\n"				\
-		"1:	ldxrb	  %w[ret], %[ptr]\n"			\
+		"	prfm	pstl1strm, %[ptr]\n"			\
+		"1:	ldxrb	%w[ret], %[ptr]\n"			\
 			#asm_op " %w[ret], %w[ret], %w[val]\n"		\
-		"	stxrb	  %w[loop], %w[ret], %[ptr]\n"		\
-		"	cbnz	  %w[loop], 1b"				\
+		"	stxrb	%w[loop], %w[ret], %[ptr]\n"		\
+		"	cbnz	%w[loop], 1b"				\
 		: [loop] "=&r" (loop), [ret] "=&r" (ret),		\
 		  [ptr] "+Q"(*(u8 *)ptr)				\
 		: [val] "Ir" (val));					\
 		break;							\
 	case 2:								\
 		asm ("//__per_cpu_" #op "_2\n"				\
-		"1:	ldxrh	  %w[ret], %[ptr]\n"			\
+		"	prfm	pstl1strm, %[ptr]\n"			\
+		"1:	ldxrh	%w[ret], %[ptr]\n"			\
 			#asm_op " %w[ret], %w[ret], %w[val]\n"		\
-		"	stxrh	  %w[loop], %w[ret], %[ptr]\n"		\
-		"	cbnz	  %w[loop], 1b"				\
+		"	stxrh	%w[loop], %w[ret], %[ptr]\n"		\
+		"	cbnz	%w[loop], 1b"				\
 		: [loop] "=&r" (loop), [ret] "=&r" (ret),		\
-		  [ptr]  "+Q"(*(u16 *)ptr)				\
+		  [ptr] "+Q"(*(u16 *)ptr)				\
 		: [val] "Ir" (val));					\
 		break;							\
 	case 4:								\
 		asm ("//__per_cpu_" #op "_4\n"				\
-		"1:	ldxr	  %w[ret], %[ptr]\n"			\
+		"	prfm	pstl1strm, %[ptr]\n"			\
+		"1:	ldxr	%w[ret], %[ptr]\n"			\
 			#asm_op " %w[ret], %w[ret], %w[val]\n"		\
-		"	stxr	  %w[loop], %w[ret], %[ptr]\n"		\
-		"	cbnz	  %w[loop], 1b"				\
+		"	stxr	%w[loop], %w[ret], %[ptr]\n"		\
+		"	cbnz	%w[loop], 1b"				\
 		: [loop] "=&r" (loop), [ret] "=&r" (ret),		\
 		  [ptr] "+Q"(*(u32 *)ptr)				\
 		: [val] "Ir" (val));					\
 		break;							\
 	case 8:								\
 		asm ("//__per_cpu_" #op "_8\n"				\
-		"1:	ldxr	  %[ret], %[ptr]\n"			\
+		"	prfm	pstl1strm, %[ptr]\n"			\
+		"1:	ldxr	%[ret], %[ptr]\n"			\
 			#asm_op " %[ret], %[ret], %[val]\n"		\
-		"	stxr	  %w[loop], %[ret], %[ptr]\n"		\
-		"	cbnz	  %w[loop], 1b"				\
+		"	stxr	%w[loop], %[ret], %[ptr]\n"		\
+		"	cbnz	%w[loop], 1b"				\
 		: [loop] "=&r" (loop), [ret] "=&r" (ret),		\
 		  [ptr] "+Q"(*(u64 *)ptr)				\
 		: [val] "Ir" (val));					\
@@ -150,7 +161,7 @@ static inline void __percpu_write(void *ptr, unsigned long val, int size)
 	}
 }
 
-static inline unsigned long __percpu_xchg(void *ptr, unsigned long val,
+static __always_inline unsigned long __percpu_xchg(void *ptr, unsigned long val,
 						int size)
 {
 	unsigned long ret = 0, loop;
@@ -158,6 +169,7 @@ static inline unsigned long __percpu_xchg(void *ptr, unsigned long val,
 	switch (size) {
 	case 1:
 		asm ("//__percpu_xchg_1\n"
+		"	prfm	pstl1strm, %[ptr]\n"
 		"1:	ldxrb	%w[ret], %[ptr]\n"
 		"	stxrb	%w[loop], %w[val], %[ptr]\n"
 		"	cbnz	%w[loop], 1b"
@@ -167,6 +179,7 @@ static inline unsigned long __percpu_xchg(void *ptr, unsigned long val,
 		break;
 	case 2:
 		asm ("//__percpu_xchg_2\n"
+		"	prfm	pstl1strm, %[ptr]\n"
 		"1:	ldxrh	%w[ret], %[ptr]\n"
 		"	stxrh	%w[loop], %w[val], %[ptr]\n"
 		"	cbnz	%w[loop], 1b"
@@ -176,6 +189,7 @@ static inline unsigned long __percpu_xchg(void *ptr, unsigned long val,
 		break;
 	case 4:
 		asm ("//__percpu_xchg_4\n"
+		"	prfm	pstl1strm, %[ptr]\n"
 		"1:	ldxr	%w[ret], %[ptr]\n"
 		"	stxr	%w[loop], %w[val], %[ptr]\n"
 		"	cbnz	%w[loop], 1b"
@@ -185,6 +199,7 @@ static inline unsigned long __percpu_xchg(void *ptr, unsigned long val,
 		break;
 	case 8:
 		asm ("//__percpu_xchg_8\n"
+		"	prfm	pstl1strm, %[ptr]\n"
 		"1:	ldxr	%[ret], %[ptr]\n"
 		"	stxr	%w[loop], %[val], %[ptr]\n"
 		"	cbnz	%w[loop], 1b"
