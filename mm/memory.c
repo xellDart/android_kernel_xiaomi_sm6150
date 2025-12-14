@@ -2586,6 +2586,12 @@ static int wp_page_shared(struct vm_fault *vmf)
 	return VM_FAULT_WRITE;
 }
 
+#ifdef CONFIG_SPECULATIVE_PAGE_FAULT
+/* Forward declarations for SPF counters used in do_wp_page */
+static atomic_long_t spf_fail_cow;
+static atomic_long_t spf_fail_swap;
+#endif
+
 /*
  * This routine handles present pages, when users try to write
  * to a shared page. It is done by copying the page to a new address
@@ -2609,6 +2615,7 @@ static int do_wp_page(struct vm_fault *vmf)
 {
 	struct vm_area_struct *vma = vmf->vma;
 
+#ifdef CONFIG_SPECULATIVE_PAGE_FAULT
 	/*
 	 * SPF cannot handle COW (Copy-On-Write) safely because:
 	 * - wp_page_copy() uses anon_vma_prepare() which may sleep
@@ -2617,9 +2624,11 @@ static int do_wp_page(struct vm_fault *vmf)
 	 * Fall back to normal path which has proper locking.
 	 */
 	if (vmf->flags & FAULT_FLAG_SPECULATIVE) {
+		atomic_long_inc(&spf_fail_cow);
 		pte_unmap_unlock(vmf->pte, vmf->ptl);
 		return VM_FAULT_RETRY;
 	}
+#endif
 
 	/*
 	 * Userfaultfd write-protect can defer flushes. Ensure the TLB
@@ -3021,6 +3030,8 @@ static atomic_long_t spf_fail_vma_changed;
 static atomic_long_t spf_fail_pte_lock;
 static atomic_long_t spf_fail_anon_race;
 static atomic_long_t spf_fail_pmd_race;
+static atomic_long_t spf_fail_cow;
+static atomic_long_t spf_fail_swap;
 
 /*
  * pte_spinlock - Try to acquire PTE lock for speculative fault
@@ -4200,8 +4211,10 @@ static int handle_pte_fault(struct vm_fault *vmf)
 		 * because do_swap_page() may sleep and uses pte_offset_map_lock
 		 * directly which is not compatible with SPF trylock semantics.
 		 */
-		if (vmf->flags & FAULT_FLAG_SPECULATIVE)
+		if (vmf->flags & FAULT_FLAG_SPECULATIVE) {
+			atomic_long_inc(&spf_fail_swap);
 			return VM_FAULT_RETRY;
+		}
 		return do_swap_page(vmf);
 	}
 
@@ -4414,7 +4427,8 @@ static atomic_long_t spf_fail_vma_changed = ATOMIC_LONG_INIT(0);
 static atomic_long_t spf_fail_pte_lock = ATOMIC_LONG_INIT(0);
 static atomic_long_t spf_fail_anon_race = ATOMIC_LONG_INIT(0);
 static atomic_long_t spf_fail_pmd_race = ATOMIC_LONG_INIT(0);
-static atomic_long_t spf_fail_write = ATOMIC_LONG_INIT(0);
+static atomic_long_t spf_fail_cow = ATOMIC_LONG_INIT(0);  /* COW needs mmap_sem */
+static atomic_long_t spf_fail_swap = ATOMIC_LONG_INIT(0); /* Swap needs to sleep */
 
 #ifdef CONFIG_PROC_FS
 #include <linux/proc_fs.h>
@@ -4456,6 +4470,10 @@ static int spf_stats_show(struct seq_file *m, void *v)
 		   atomic_long_read(&spf_fail_anon_race));
 	seq_printf(m, "pmd_race:         %ld (PMD became none)\n",
 		   atomic_long_read(&spf_fail_pmd_race));
+	seq_printf(m, "cow:              %ld (Copy-On-Write needs mmap_sem)\n",
+		   atomic_long_read(&spf_fail_cow));
+	seq_printf(m, "swap:             %ld (swap faults need to sleep)\n",
+		   atomic_long_read(&spf_fail_swap));
 	return 0;
 }
 
@@ -4708,20 +4726,17 @@ int __handle_speculative_fault(struct mm_struct *mm, unsigned long address,
 	vmf.gfp_mask = GFP_NOWAIT | __GFP_NOWARN;
 
 	/*
-	 * For now, only handle simple anonymous page faults speculatively.
-	 * More complex cases (swap, COW, file-backed) fall back to normal path.
+	 * SPF can now handle:
+	 * 1. Anonymous read faults (zero page or new page allocation)
+	 * 2. Anonymous write faults (new page allocation with write perms)
+	 * 3. PTE present faults (access bit updates, write to writable page)
+	 * 4. COW faults - these will be caught in do_wp_page() and retry
+	 *
+	 * Cases that still fall back to normal path:
+	 * - Swap faults (do_swap_page needs to sleep)
+	 * - NUMA faults (do_numa_page uses blocking locks)
+	 * - File-backed faults (need vm_ops handlers)
 	 */
-	if (vmf.pte != NULL) {
-		/* PTE exists - could be swap, COW, etc. Too complex for SPF. */
-		atomic_long_inc(&spf_fail_pte_lock);
-		goto out_put;
-	}
-
-	/* Only handle read faults for now - write faults are more complex */
-	if (flags & FAULT_FLAG_WRITE) {
-		atomic_long_inc(&spf_fail_pte_lock);
-		goto out_put;
-	}
 
 	mem_cgroup_enter_user_fault();
 	ret = handle_pte_fault(&vmf);
