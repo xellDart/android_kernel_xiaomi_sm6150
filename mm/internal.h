@@ -40,6 +40,31 @@ void page_writeback_init(void);
 
 int do_swap_page(struct vm_fault *vmf);
 
+#ifdef CONFIG_SPECULATIVE_PAGE_FAULT
+extern struct vm_area_struct *get_vma(struct mm_struct *mm,
+				      unsigned long addr);
+extern void put_vma(struct vm_area_struct *vma);
+
+/*
+ * vma_has_changed - Check if VMA has been modified during speculative fault
+ * @vmf: The vm_fault structure containing the VMA and saved sequence number
+ *
+ * Returns true if the VMA's sequence number has changed since the fault started.
+ * The seqcount is incremented on any VMA modification including removal.
+ * We rely only on seqcount, not RB_EMPTY_NODE, because:
+ * 1. The refcount prevents freeing while we hold a reference
+ * 2. The seqcount is updated BEFORE any VMA modification
+ */
+static inline bool vma_has_changed(struct vm_fault *vmf)
+{
+	unsigned int seq = READ_ONCE(vmf->vma->vm_sequence.sequence);
+
+	smp_rmb();
+
+	return seq != vmf->sequence;
+}
+#endif /* CONFIG_SPECULATIVE_PAGE_FAULT */
+
 void free_pgtables(struct mmu_gather *tlb, struct vm_area_struct *start_vma,
 		unsigned long floor, unsigned long ceiling);
 

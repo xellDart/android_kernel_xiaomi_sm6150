@@ -665,6 +665,11 @@ static __latent_entropy int dup_mmap(struct mm_struct *mm,
 			goto fail_nomem;
 		*tmp = *mpnt;
 		INIT_LIST_HEAD(&tmp->anon_vma_chain);
+#ifdef CONFIG_SPECULATIVE_PAGE_FAULT
+		/* Initialize SPF fields for the new VMA - don't inherit from parent */
+		seqcount_init(&tmp->vm_sequence);
+		atomic_set(&tmp->vm_ref_count, 1);
+#endif
 		retval = vma_dup_policy(mpnt, tmp);
 		if (retval)
 			goto fail_nomem_policy;
@@ -829,6 +834,9 @@ static struct mm_struct *mm_init(struct mm_struct *mm, struct task_struct *p,
 {
 	mm->mmap = NULL;
 	mm->mm_rb = RB_ROOT;
+#ifdef CONFIG_SPECULATIVE_PAGE_FAULT
+	rwlock_init(&mm->mm_rb_lock);
+#endif
 	mm->vmacache_seqnum = 0;
 	atomic_set(&mm->mm_users, 1);
 	atomic_set(&mm->mm_count, 1);

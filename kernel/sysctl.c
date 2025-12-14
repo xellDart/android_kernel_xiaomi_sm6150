@@ -114,6 +114,9 @@ extern unsigned int sysctl_nr_open_min, sysctl_nr_open_max;
 #ifndef CONFIG_MMU
 extern int sysctl_nr_trim_pages;
 #endif
+#ifdef CONFIG_SPECULATIVE_PAGE_FAULT
+extern int sysctl_speculative_page_fault;
+#endif
 
 /* Constants used for minimum and  maximum */
 #ifdef CONFIG_LOCKUP_DETECTOR
@@ -1578,6 +1581,17 @@ static struct ctl_table kern_table[] = {
 };
 
 static struct ctl_table vm_table[] = {
+#ifdef CONFIG_SPECULATIVE_PAGE_FAULT
+	{
+		.procname	= "speculative_page_fault",
+		.data		= &sysctl_speculative_page_fault,
+		.maxlen		= sizeof(sysctl_speculative_page_fault),
+		.mode		= 0644,
+		.proc_handler	= proc_dointvec_minmax,
+		.extra1		= &zero,
+		.extra2		= &one,
+	},
+#endif
 	{
 		.procname	= "overcommit_memory",
 		.data		= &sysctl_overcommit_memory,

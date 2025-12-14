@@ -305,6 +305,12 @@ static int __bprm_mm_init(struct linux_binprm *bprm)
 	if (!vma)
 		return -ENOMEM;
 
+#ifdef CONFIG_SPECULATIVE_PAGE_FAULT
+	/* Initialize SPF fields for the stack VMA */
+	seqcount_init(&vma->vm_sequence);
+	atomic_set(&vma->vm_ref_count, 1);
+#endif
+
 	if (down_write_killable(&mm->mmap_sem)) {
 		err = -EINTR;
 		goto err_free;

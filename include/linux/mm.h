@@ -347,6 +347,7 @@ extern pgprot_t protection_map[16];
 #define FAULT_FLAG_INSTRUCTION  		0x100
 #define FAULT_FLAG_INTERRUPTIBLE		0x200
 #define FAULT_FLAG_PREFAULT_OLD			0x400
+#define FAULT_FLAG_SPECULATIVE			0x800
 
 /*
  * The default fault flags that should be used by most of the
@@ -402,6 +403,13 @@ struct vm_fault {
 	gfp_t gfp_mask;			/* gfp mask to be used for allocations */
 	pgoff_t pgoff;			/* Logical page offset based on vma */
 	unsigned long address;		/* Faulting virtual address */
+#ifdef CONFIG_SPECULATIVE_PAGE_FAULT
+	struct mm_struct *mm;		/* mm_struct - cached for safe SPF access */
+	unsigned int sequence;
+	pmd_t orig_pmd;			/* value of PMD at the time of fault */
+	unsigned long vma_flags;	/* vma->vm_flags at fault time */
+	pgprot_t vma_page_prot;		/* vma->vm_page_prot at fault time */
+#endif
 	pmd_t *pmd;			/* Pointer to pmd entry matching
 					 * the 'address' */
 	pud_t *pud;			/* Pointer to pud entry matching
@@ -433,6 +441,48 @@ struct vm_fault {
 					 * atomic context.
 					 */
 };
+
+/*
+ * VMA sequence count helpers for speculative page fault handling.
+ */
+#ifdef CONFIG_SPECULATIVE_PAGE_FAULT
+static inline void vm_write_begin(struct vm_area_struct *vma)
+{
+	write_seqcount_begin(&vma->vm_sequence);
+}
+static inline void vm_write_begin_nested(struct vm_area_struct *vma,
+					 int subclass)
+{
+	write_seqcount_begin_nested(&vma->vm_sequence, subclass);
+}
+static inline void vm_write_end(struct vm_area_struct *vma)
+{
+	write_seqcount_end(&vma->vm_sequence);
+}
+/*
+ * vm_raw_write_begin/end - variants that don't do lockdep checking
+ * Used in paths where lockdep would report false positives
+ */
+static inline void vm_raw_write_begin(struct vm_area_struct *vma)
+{
+	raw_write_seqcount_begin(&vma->vm_sequence);
+}
+static inline void vm_raw_write_end(struct vm_area_struct *vma)
+{
+	raw_write_seqcount_end(&vma->vm_sequence);
+}
+static inline unsigned int vm_read_begin(struct vm_area_struct *vma)
+{
+	return read_seqcount_begin(&vma->vm_sequence);
+}
+#else
+static inline void vm_write_begin(struct vm_area_struct *vma) {}
+static inline void vm_write_begin_nested(struct vm_area_struct *vma,
+					 int subclass) {}
+static inline void vm_write_end(struct vm_area_struct *vma) {}
+static inline void vm_raw_write_begin(struct vm_area_struct *vma) {}
+static inline void vm_raw_write_end(struct vm_area_struct *vma) {}
+#endif /* CONFIG_SPECULATIVE_PAGE_FAULT */
 
 /* page entry size for vm->huge_fault() */
 enum page_entry_size {
@@ -1380,6 +1430,19 @@ struct zap_details {
 	pgoff_t last_index;			/* Highest page->index to unmap */
 };
 
+/*
+ * INIT_VMA - Initialize a new VMA structure
+ * Must be called when allocating a new VMA
+ */
+static inline void INIT_VMA(struct vm_area_struct *vma)
+{
+	INIT_LIST_HEAD(&vma->anon_vma_chain);
+#ifdef CONFIG_SPECULATIVE_PAGE_FAULT
+	seqcount_init(&vma->vm_sequence);
+	atomic_set(&vma->vm_ref_count, 1);
+#endif
+}
+
 struct page *_vm_normal_page(struct vm_area_struct *vma, unsigned long addr,
 			     pte_t pte, bool with_public_device);
 #define vm_normal_page(vma, addr, pte) _vm_normal_page(vma, addr, pte, false)
@@ -1478,6 +1541,42 @@ extern int handle_mm_fault(struct vm_area_struct *vma, unsigned long address,
 extern int fixup_user_fault(struct task_struct *tsk, struct mm_struct *mm,
 			    unsigned long address, unsigned int fault_flags,
 			    bool *unlocked);
+
+#ifdef CONFIG_SPECULATIVE_PAGE_FAULT
+extern int __handle_speculative_fault(struct mm_struct *mm,
+				      unsigned long address,
+				      unsigned int flags);
+/* Runtime enable/disable for SPF - starts disabled for safe boot */
+extern int sysctl_speculative_page_fault;
+
+static inline int handle_speculative_fault(struct mm_struct *mm,
+					   unsigned long address,
+					   unsigned int flags)
+{
+	/*
+	 * SPF can be disabled at runtime via:
+	 *   echo 0 > /proc/sys/vm/speculative_page_fault
+	 * Enable with:
+	 *   echo 1 > /proc/sys/vm/speculative_page_fault
+	 */
+	if (!sysctl_speculative_page_fault)
+		return VM_FAULT_RETRY;
+	/*
+	 * Try speculative page fault for multithreaded user space task only.
+	 */
+	if (!(flags & FAULT_FLAG_USER) || atomic_read(&mm->mm_users) == 1)
+		return VM_FAULT_RETRY;
+	return __handle_speculative_fault(mm, address, flags);
+}
+#else
+static inline int handle_speculative_fault(struct mm_struct *mm,
+					   unsigned long address,
+					   unsigned int flags)
+{
+	return VM_FAULT_RETRY;
+}
+#endif /* CONFIG_SPECULATIVE_PAGE_FAULT */
+
 #else
 static inline int handle_mm_fault(struct vm_area_struct *vma,
 		unsigned long address, unsigned int flags)

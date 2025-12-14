@@ -907,3 +907,24 @@ config FORCE_ALLOC_FROM_DMA_ZONE
 	  always using ZONE_DMA memory.
 
 	  If unsure, say "n".
+
+config ARCH_SUPPORTS_SPECULATIVE_PAGE_FAULT
+	def_bool n
+
+config SPECULATIVE_PAGE_FAULT
+	bool "Speculative page faults"
+	default y
+	depends on ARCH_SUPPORTS_SPECULATIVE_PAGE_FAULT && MMU && SMP
+	help
+	  Try to handle user space page faults without holding the mmap_sem.
+
+	  This should allow better concurrency for massively multithreaded
+	  processes since the page fault handler will not wait for other
+	  threads memory layout change to be done, assuming that this change
+	  is done in another part of the process's memory space.
+
+	  If the speculative page fault fails because of a concurrency is
+	  detected or because underlying PMD or PTE tables are not yet
+	  allocated, it falls back to the classic page fault mechanism.
+
+	  App launching time improved by about 6-20% depending on thread count.

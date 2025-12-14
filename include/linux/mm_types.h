@@ -9,6 +9,7 @@
 #include <linux/spinlock.h>
 #include <linux/rbtree.h>
 #include <linux/rwsem.h>
+#include <linux/seqlock.h>
 #include <linux/completion.h>
 #include <linux/cpumask.h>
 #include <linux/uprobes.h>
@@ -343,6 +344,11 @@ struct vm_area_struct {
 #ifdef CONFIG_UKSM
 	struct vma_slot *uksm_vma_slot;
 #endif
+#ifdef CONFIG_SPECULATIVE_PAGE_FAULT
+	seqcount_t vm_sequence;
+	atomic_t vm_ref_count;		/* see get_vma(), put_vma() */
+	struct rcu_head vm_rcu;		/* RCU-delayed freeing for SPF safety */
+#endif
 } __randomize_layout;
 
 struct core_thread {
@@ -360,6 +366,9 @@ struct kioctx_table;
 struct mm_struct {
 	struct vm_area_struct *mmap;		/* list of VMAs */
 	struct rb_root mm_rb;
+#ifdef CONFIG_SPECULATIVE_PAGE_FAULT
+	rwlock_t mm_rb_lock;
+#endif
 	u32 vmacache_seqnum;                   /* per-thread vmacache */
 #ifdef CONFIG_MMU
 	unsigned long (*get_unmapped_area) (struct file *filp,

@@ -1,0 +1,6 @@
+id=kernel_tweaks
+name=Kernel Tweaks
+version=2.0
+versionCode=3
+author=xellDart
+description=VM, I/O, MGLRU and network optimizations for better responsiveness

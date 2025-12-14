@@ -459,6 +459,18 @@ static int __kprobes do_page_fault(unsigned long addr, unsigned int esr,
 
 	perf_sw_event(PERF_COUNT_SW_PAGE_FAULTS, 1, regs, addr);
 
+#ifdef CONFIG_SPECULATIVE_PAGE_FAULT
+	/*
+	 * Try a speculative page fault without holding mmap_sem.
+	 * If successful, we avoid contention on the mmap_sem.
+	 */
+	if (mm_flags & FAULT_FLAG_USER) {
+		fault = handle_speculative_fault(mm, addr, mm_flags);
+		if (fault != VM_FAULT_RETRY)
+			goto done;
+	}
+#endif
+
 	/*
 	 * As per x86, we may deadlock here. However, since the kernel only
 	 * validly references user space from well defined areas of the code,
@@ -499,6 +511,9 @@ retry:
 	}
 	up_read(&mm->mmap_sem);
 
+#ifdef CONFIG_SPECULATIVE_PAGE_FAULT
+done:
+#endif
 	/*
 	 * Handle the "normal" (no error) case first.
 	 */
