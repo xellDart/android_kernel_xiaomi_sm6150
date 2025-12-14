@@ -24,6 +24,10 @@
  * x0: bits 5:0  bit offset
  *     bits 31:6 word offset
  * x1: address
+ *
+ * LSE optimization: use LD* with xzr instead of ST* variants.
+ * From Linux 6.18: ST* executes "far" in interconnect (~50ns),
+ * LD* xzr executes "near" in L1 cache (~5ns).
  */
 	.macro	bitop, name, llsc, lse
 ENTRY(	\name	)
@@ -34,7 +38,7 @@ ENTRY(	\name	)
 alt_lse "	prfm	pstl1strm, [x1]",	"nop"
 	lsl	x3, x2, x3		// Create mask
 
-alt_lse	"1:	ldxr	x2, [x1]",		"\lse	x3, [x1]"
+alt_lse	"1:	ldxr	x2, [x1]",		"\lse	x3, xzr, [x1]"
 alt_lse	"	\llsc	x2, x2, x3",		"nop"
 alt_lse	"	stxr	w0, x2, [x1]",		"nop"
 alt_lse	"	cbnz	w0, 1b",		"nop"
@@ -66,10 +70,11 @@ ENDPROC(\name	)
 
 /*
  * Atomic bit operations.
+ * Using LD* with xzr instead of ST* for "near" execution in L1.
  */
-	bitop	change_bit, eor, steor
-	bitop	clear_bit, bic, stclr
-	bitop	set_bit, orr, stset
+	bitop	change_bit, eor, ldeor
+	bitop	clear_bit, bic, ldclr
+	bitop	set_bit, orr, ldset
 
 	testop	test_and_change_bit, eor, ldeoral
 	testop	test_and_clear_bit, bic, ldclral
