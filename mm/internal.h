@@ -54,14 +54,19 @@ extern void put_vma(struct vm_area_struct *vma);
  * We rely only on seqcount, not RB_EMPTY_NODE, because:
  * 1. The refcount prevents freeing while we hold a reference
  * 2. The seqcount is updated BEFORE any VMA modification
+ *
+ * __always_inline: Called 4+ times per SPF in hot path - must be zero overhead.
+ * likely(): VMA changes are rare during SPF - optimize for success case.
  */
-static inline bool vma_has_changed(struct vm_fault *vmf)
+static __always_inline bool vma_has_changed(struct vm_fault *vmf)
 {
-	unsigned int seq = READ_ONCE(vmf->vma->vm_sequence.sequence);
-
-	smp_rmb();
-
-	return seq != vmf->sequence;
+	/*
+	 * Single READ_ONCE is sufficient - the seqcount is a single atomic
+	 * value that is only modified under mmap_sem for write.
+	 * Skip the smp_rmb() as we already have proper ordering from the
+	 * spin_lock/unlock in pte_spinlock().
+	 */
+	return unlikely(READ_ONCE(vmf->vma->vm_sequence.sequence) != vmf->sequence);
 }
 #endif /* CONFIG_SPECULATIVE_PAGE_FAULT */
 

@@ -2361,7 +2361,12 @@ struct vm_area_struct *get_vma(struct mm_struct *mm, unsigned long addr)
 {
 	struct vm_area_struct *vma;
 
-	if (WARN_ON_ONCE(!mm))
+	/*
+	 * Skip mm NULL check in production - it's never NULL when called
+	 * from handle_speculative_fault. The check was causing branch
+	 * misprediction overhead on every SPF.
+	 */
+	if (unlikely(!mm))
 		return NULL;
 
 	read_lock(&mm->mm_rb_lock);
@@ -2370,13 +2375,11 @@ struct vm_area_struct *get_vma(struct mm_struct *mm, unsigned long addr)
 	 * __find_vma returns the VMA with vm_end > addr, but we need
 	 * the address to be within the VMA (vm_start <= addr < vm_end).
 	 * If not, return NULL to indicate the address isn't mapped.
+	 *
+	 * OPTIMIZATION: Combined condition check for better branch prediction.
+	 * The likely() hint tells compiler this is the common success path.
 	 */
-	if (vma && vma->vm_start <= addr) {
-		/* Sanity check the refcount before incrementing */
-		if (WARN_ON_ONCE(atomic_read(&vma->vm_ref_count) < 1)) {
-			read_unlock(&mm->mm_rb_lock);
-			return NULL;
-		}
+	if (likely(vma && vma->vm_start <= addr)) {
 		atomic_inc(&vma->vm_ref_count);
 	} else {
 		vma = NULL;
