@@ -161,24 +161,20 @@ static void mnt_free_id(struct mount *mnt)
 #ifdef CONFIG_KSU_SUSFS_SUS_MOUNT
     int mnt_id_backup = mnt->mnt.susfs_mnt_id_backup;
     
-    // Verificamos primero si es un ID especial que no debe liberarse
     if (unlikely(mnt_id_backup == DEFAULT_SUS_MNT_ID_FOR_KSU_PROC_UNSHARE)) {
         return;
     }
     
-    // Si el mnt_id es un ID suspendido, lo liberamos del ida especial
     if (unlikely(mnt->mnt_id >= DEFAULT_SUS_MNT_ID)) {
         (&susfs_mnt_id_ida, id);
         return;
     }
     
-    // Si hay un backup, liberamos el ID original respaldado
     if (likely(mnt_id_backup)) {
         ida_free(&mnt_id_ida, mnt_id_backup);
         return;
     }
 #endif
-    // Caso por defecto: liberar el mnt_id normal
     ida_free(&mnt_id_ida, id);
 }
 
@@ -190,7 +186,6 @@ static int mnt_alloc_group_id(struct mount *mnt)
     int res;
     
 #ifdef CONFIG_KSU_SUSFS_SUS_MOUNT
-    // Si el mnt_id es suspendido, asignamos desde el IDA especial
     if (mnt->mnt_id >= DEFAULT_SUS_MNT_ID) {
         res = ida_alloc_min(&susfs_mnt_group_ida, susfs_mnt_group_start, GFP_KERNEL);
         if (res < 0)
@@ -199,9 +194,7 @@ static int mnt_alloc_group_id(struct mount *mnt)
         return 0;
     }
 #endif
-    
-    // Caso normal: asignar desde el IDA estándar
-    res = ida_alloc_min(&mnt_group_ida, mnt_group_start, GFP_KERNEL);
+    res = ida_alloc_min(&mnt_group_ida, 1, GFP_KERNEL);
     if (res < 0)
         return res;
     mnt->mnt_group_id = res;
@@ -216,14 +209,12 @@ void mnt_release_group_id(struct mount *mnt)
     int id = mnt->mnt_group_id;
     
 #ifdef CONFIG_KSU_SUSFS_SUS_MOUNT
-    // Si mnt_group_id es un ID suspendido, lo liberamos del IDA especial
     if (id >= DEFAULT_SUS_MNT_GROUP_ID) {
         ida_free(&susfs_mnt_group_ida, id);
         mnt->mnt_group_id = 0;
         return;
     }
 #endif
-    // Caso normal: liberar del IDA estándar
     ida_free(&mnt_group_ida, id);
     mnt->mnt_group_id = 0;
 }
