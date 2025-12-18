@@ -201,7 +201,7 @@ static int mnt_alloc_group_id(struct mount *mnt)
 #endif
     
     // Caso normal: asignar desde el IDA estándar
-    res = ida_alloc_min(&mnt_group_ida, mnt_group_start, GFP_KERNEL);
+    res = ida_alloc_min(&mnt_group_ida, 1, GFP_KERNEL);
     if (res < 0)
         return res;
     mnt->mnt_group_id = res;
