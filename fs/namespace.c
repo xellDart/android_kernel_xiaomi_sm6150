@@ -40,8 +40,6 @@ extern bool susfs_is_current_zygote_domain(void);
 
 static DEFINE_IDA(susfs_mnt_id_ida);
 static DEFINE_IDA(susfs_mnt_group_ida);
-static int susfs_mnt_id_start = DEFAULT_SUS_MNT_ID;
-static int susfs_mnt_group_start = DEFAULT_SUS_MNT_GROUP_ID;
 
 #define CL_ZYGOTE_COPY_MNT_NS BIT(24) /* used by copy_mnt_ns() */
 #define CL_COPY_MNT_NS BIT(25) /* used by copy_mnt_ns() */
@@ -130,19 +128,12 @@ static inline struct hlist_head *mp_hash(struct dentry *dentry)
 // Our own mnt_alloc_id() that assigns mnt_id starting from DEFAULT_SUS_MNT_ID
 static int susfs_mnt_alloc_id(struct mount *mnt)
 {
-	int res;
+	int res = ida_alloc_min(&susfs_mnt_id_ida, DEFAULT_SUS_MNT_ID, GFP_KERNEL);
 
-retry:
-	ida_pre_get(&susfs_mnt_id_ida, GFP_KERNEL);
-	spin_lock(&mnt_id_lock);
-	res = ida_get_new_above(&susfs_mnt_id_ida, susfs_mnt_id_start, &mnt->mnt_id);
-	if (!res)
-		susfs_mnt_id_start = mnt->mnt_id + 1;
-	spin_unlock(&mnt_id_lock);
-	if (res == -EAGAIN)
-		goto retry;
-
-	return res;
+	if (res < 0)
+		return res;
+	mnt->mnt_id = res;
+	return 0;
 }
 #endif
 static int mnt_alloc_id(struct mount *mnt)
@@ -161,24 +152,20 @@ static void mnt_free_id(struct mount *mnt)
 #ifdef CONFIG_KSU_SUSFS_SUS_MOUNT
     int mnt_id_backup = mnt->mnt.susfs_mnt_id_backup;
     
-    // Verificamos primero si es un ID especial que no debe liberarse
     if (unlikely(mnt_id_backup == DEFAULT_SUS_MNT_ID_FOR_KSU_PROC_UNSHARE)) {
         return;
     }
     
-    // Si el mnt_id es un ID suspendido, lo liberamos del ida especial
     if (unlikely(mnt->mnt_id >= DEFAULT_SUS_MNT_ID)) {
-        (&susfs_mnt_id_ida, id);
+        ida_free(&susfs_mnt_id_ida, id);
         return;
     }
     
-    // Si hay un backup, liberamos el ID original respaldado
     if (likely(mnt_id_backup)) {
         ida_free(&mnt_id_ida, mnt_id_backup);
         return;
     }
 #endif
-    // Caso por defecto: liberar el mnt_id normal
     ida_free(&mnt_id_ida, id);
 }
 
@@ -192,7 +179,7 @@ static int mnt_alloc_group_id(struct mount *mnt)
 #ifdef CONFIG_KSU_SUSFS_SUS_MOUNT
     // Si el mnt_id es suspendido, asignamos desde el IDA especial
     if (mnt->mnt_id >= DEFAULT_SUS_MNT_ID) {
-        res = ida_alloc_min(&susfs_mnt_group_ida, susfs_mnt_group_start, GFP_KERNEL);
+        res = ida_alloc_min(&susfs_mnt_group_ida, DEFAULT_SUS_MNT_GROUP_ID, GFP_KERNEL);
         if (res < 0)
             return res;
         mnt->mnt_group_id = res;
@@ -3890,7 +3877,7 @@ const struct proc_ns_operations mntns_operations = {
 };
 
 #ifdef CONFIG_KSU_SUSFS_TRY_UMOUNT
-extern void susfs_try_umount_all(uid_t uid);
+extern void susfs_try_umount(uid_t uid);
 void susfs_run_try_umount_for_current_mnt_ns(void) {
 	struct mount *mnt;
 	struct mnt_namespace *mnt_ns;
@@ -3906,7 +3893,7 @@ void susfs_run_try_umount_for_current_mnt_ns(void) {
 	}
 	// Unlock the namespace
 	namespace_unlock();
-	susfs_try_umount_all(current_uid().val);
+	susfs_try_umount(current_uid().val);
 }
 #endif
 #ifdef CONFIG_KSU_SUSFS
