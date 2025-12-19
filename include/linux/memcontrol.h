@@ -1104,37 +1104,9 @@ static inline void count_memcg_page_event(struct page *page,
 {
 }
 
-static inline void mem_cgroup_put(struct mem_cgroup *memcg)
-{
-}
-
 static inline
 void count_memcg_event_mm(struct mm_struct *mm, enum vm_event_item idx)
 {
-}
-
-static inline struct mem_cgroup *get_mem_cgroup_from_mm(struct mm_struct *mm)
-{
-	return NULL;
-}
-
-static inline enum mem_cgroup_protection mem_cgroup_protected(
-	struct mem_cgroup *root, struct mem_cgroup *memcg)
-{
-	return MEMCG_PROT_NONE;
-}
-
-/* MGLRU support - try to stabilize page_memcg() for all pages in a memcg */
-static inline bool mem_cgroup_trylock_pages(struct mem_cgroup *memcg)
-{
-	/* to match page_memcg_rcu() */
-	rcu_read_lock();
-	return true;
-}
-
-static inline void mem_cgroup_unlock_pages(void)
-{
-	rcu_read_unlock();
 }
 
 #endif /* CONFIG_MEMCG */
